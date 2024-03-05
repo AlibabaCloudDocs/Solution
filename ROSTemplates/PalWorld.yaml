@@ -1,0 +1,573 @@
+ROSTemplateFormatVersion: '2015-09-01'
+Description:
+  en: Deploy PalWorld server in a more economical way with servers that start and stop on demand
+  zh-cn: 一键部署幻兽帕鲁游戏服务，通过抢占式实例哨兵服务器与低负载时自动停止的游戏服务器节省成本
+
+Parameters:
+  #参数列表
+
+  #游戏参数
+  ServerName:
+    Type: String
+    Label:
+      en: Server Name
+      zh-cn: 服务器名称
+    Description:
+      en: ServerName
+      zh-cn: ServerName
+    Default: "Default Palworld Server"
+    AllowedPattern: '^[A-Za-z0-9\ ]*$'
+    ConstraintDescription:
+      zh-cn: '只允许大写字母、小写字母、数字和空格，不允许包含特殊符号'
+      en: >-
+        Only uppercase letters, lowercase letters, numbers, and Spaces are allowed, and special symbols are not allowed
+  ServerDescription:
+    Type: String
+    Label:
+      en: Server Description
+      zh-cn: 服务器描述
+    Description:
+      en: ServerDescription
+      zh-cn: ServerDescription
+    Default: ""
+    AllowedPattern: "^[A-Za-z0-9\ ]*$"
+    ConstraintDescription:
+      zh-cn: '只允许大写字母、小写字母、数字和空格，不允许包含特殊符号'
+      en: >-
+        Only uppercase letters, lowercase letters, numbers, and Spaces are allowed, and special symbols are not allowed
+  AdminPassword:
+    Type: String
+    Label:
+      en: Admin Password
+      zh-cn: 服务器管理员密码
+    Description:
+      en: The admin password and RCON must be set at the same time to take effect.
+      zh-cn: 管理员密码和启用RCON 同时设置才能生效
+    AllowedPattern: '^[A-Za-z0-9\ ]*$'
+    Default: ""
+  ServerPassword:
+    Type: String
+    Label:
+      en: Server Password
+      zh-cn: 进入服务器密码
+    Description:
+      en: ServerPassword
+      zh-cn: ServerPassword
+    AllowedPattern: '^[A-Za-z0-9\ ]*$'
+    Default: ""
+  RCONEnabled:
+    Type: String
+    Label:
+      en: Enable RCON
+      zh-cn: 启用RCON
+    AssociationPropertyMetadata:
+      ValueLabelMapping:
+        "True": 开启
+        "False": 关闭
+    Description:
+      en: The admin password and RCON must be set at the same time to take effect.
+      zh-cn: 管理员密码和启用RCON 同时设置才能生效
+    AllowedValues:
+      - "False"
+      - "True"
+    Default: "False"
+
+
+  #云服务相关
+  ZoneId:
+    #VSwitch可用区列表
+    Type: String
+    AssociationProperty: ALIYUN::ECS::ZoneId
+
+  SentryType:
+    #Sentry服务器的规格，在Ros控制台上选择
+    Type: String
+    AssociationProperty: ALIYUN::ECS::Instance::InstanceType
+    AssociationPropertyMetadata:
+      ZoneId: ${ZoneId}
+      InstanceChargeType: PostPaid
+    Label:
+      en: Sentry instance type
+      zh-cn: Sentry服务器规格
+
+  GameType:
+    #Game服务器的规格
+    Type: String
+    AssociationProperty: ALIYUN::ECS::Instance::InstanceType
+    AssociationPropertyMetadata:
+      ZoneId: ${ZoneId}
+      InstanceChargeType: PostPaid
+    Label:
+      en: Game instance type
+      zh-cn: Game服务器规格
+
+  # GamePassword:
+  #   #Game服务器的密码
+  #   Type: String
+  #   Label:
+  #     en: ECS Instance Password
+  #     zh-cn: ECS实例密码
+  #   Description:
+  #     en: Server login password, Length 8-30, must contain three(Capital letters,
+  #       lowercase letters, numbers, ()`~!@#$%^&*_-+=|{}[]:;'<>,.?/ Special symbol
+  #       in)
+  #     zh-cn: ECS实例登录密码,长度8-30，必须包含三项（大写字母、小写字母、数字、 ()`~!@#$%^&*_-+=|{}[]:;'<>,.?/ 中的特殊符号）
+  #   AssociationProperty: ALIYUN::ECS::Instance::Password
+  #   NoEcho: true
+
+Resources:
+  #创建资源的顺序
+  # VPC - VSwitch - SecurityGroup -
+  # NASFileSystem -
+  # SentryTemplate - SentryGroup - SentryGroupEnable - GameServer
+
+  VPC:
+    #专有网络
+    Type: ALIYUN::ECS::VPC
+    Properties:
+      CidrBlock: 192.168.0.0/16
+      VpcName: PalWorld-VPC
+
+  VSwitch:
+    #虚拟交换机
+    Type: ALIYUN::ECS::VSwitch
+    Properties:
+      ZoneId:
+        Ref: ZoneId
+      VpcId:
+        Ref: VPC
+      CidrBlock: 192.168.1.0/24
+      VSwitchName: PalWorld-VSwitch
+
+  SecurityGroup:
+    #安全组
+    Type: ALIYUN::ECS::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VPC
+      SecurityGroupName: PalWorld-SecurityGroup
+      SecurityGroupIngress:
+        - PortRange: 8211/8211
+          Priority: 1
+          SourceCidrIp: 0.0.0.0/0
+          IpProtocol: udp
+        - PortRange: 25575/25575
+          Priority: 1
+          SourceCidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+        # - PortRange: 22/22
+        #   Priority: 1
+        #   SourceCidrIp: 0.0.0.0/0
+        #   IpProtocol: tcp
+  
+  GameEip:
+    #对外暴露的EIP，作为玩家统一的入口
+    Type: ALIYUN::VPC::EIP
+    Properties:
+      Netmode: public
+      Bandwidth: 20
+      InstanceChargeType: Postpaid
+      InternetChargeType: PayByTraffic
+  
+  GameEipAssociation:
+    #绑定EIP
+    Type: ALIYUN::VPC::EIPAssociation
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+          - GameEip
+          - AllocationId
+      InstanceId:
+        Fn::GetAtt:
+          - Game
+          - InstanceId
+      
+  AssistEip:
+    #辅助使用的公网ip
+    Type: ALIYUN::VPC::EIP
+    Properties:
+      Netmode: public
+      Bandwidth: 20
+      InstanceChargeType: Postpaid
+      InternetChargeType: PayByTraffic
+
+  NASFileSystem:
+    #Sentry与Game服务器共同使用的NAS，用于存储PalWorld世界数据
+    Type: ALIYUN::NAS::FileSystem
+    Properties:
+      #通用容量型NAS,按量付费
+      FileSystemType: standard
+      StorageType: Capacity
+      ProtocolType: NFS
+      EncryptType: 0
+      ChargeType: PayAsYouGo
+      VpcId:
+        Ref: VPC
+      VSwitchId:
+        Ref: VSwitch
+      Description: PalWorld-NAS
+
+  NASMountTarget:
+    Type: ALIYUN::NAS::MountTarget
+    Properties:
+      Status: Active
+      VpcId:
+        Ref: VPC
+      VSwitchId:
+        Ref: VSwitch
+      SecurityGroupId:
+        Ref: SecurityGroup
+      NetworkType: Vpc
+      FileSystemId:
+        Ref: NASFileSystem
+  
+  SentryTemplate:
+    #Sentry服务器的实例启动模版
+    Type: ALIYUN::ECS::LaunchTemplate
+    Properties:
+      LaunchTemplateName: PalWorld-Sentry-Template
+      ImageId: aliyun_3_x64_20G_qboot_alibase_20230727.vhd #Alibaba Cloud Linux 3.2104 64位 快速启动版
+      InstanceType:
+        Ref: SentryType
+      SecurityGroupId:
+        Ref: SecurityGroup
+      NetworkType: vpc
+      VSwitchId:
+        Ref: VSwitch
+      InstanceName: PalWorld-Sentry-Instance
+      #20M带宽按量付费公网IP
+      ZoneId:
+        Ref: ZoneId
+      #高效云盘20G，按量付费抢占式实例
+      SystemDiskCategory: cloud_essd
+      SystemDiskPerformanceLevel: PL0
+      SystemDiskSize: 20
+      InstanceChargeType: PostPaid
+      SpotStrategy: SpotAsPriceGo
+      SpotDuration: 0
+      RamRoleName:
+        Fn::GetAtt:
+          - RamRole
+          - RoleName
+      UserData:
+        Fn::Base64Encode:
+          Fn::Sub:
+            - |
+              #!/bin/sh
+              PAL_TOOLS_PATH=/root/.palworld-tools
+              RUN_PROXY=$PAL_TOOLS_PATH/run_proxy.sh
+
+              mkdir -p $PAL_TOOLS_PATH
+              curl https://cloud-tutorials.oss-cn-hangzhou-internal.aliyuncs.com/palworld/palworldproxy -o $PAL_TOOLS_PATH/palworldproxy
+              chmod +x $PAL_TOOLS_PATH/palworldproxy
+              # run_proxy.sh
+              echo '#!/bin/sh' > $RUN_PROXY
+              echo "$PAL_TOOLS_PATH/palworldproxy -c $PAL_TOOLS_PATH/config.ini" >> $RUN_PROXY
+              chmod +x $RUN_PROXY
+              # config.ini
+              echo "mode=sentry
+              bufferSize=2048
+
+              instanceRamRole=${RoleName}
+              region=${StackRegion}
+              ecsApiEndpoint=ecs-vpc.${StackRegion}.aliyuncs.com
+              vpcApiEndpoint=vpc-vpc.${StackRegion}.aliyuncs.com
+              essApiEndpoint=ess-vpc.${StackRegion}.aliyuncs.com
+
+              ; 哨兵模式，与后端 worker 交替工作。
+              [sentry]
+              listenAddress=:8211
+              serverAddress=${GameIp}:8212
+              localServerStartScript=docker start palworld-server
+              localServerStopScript=docker stop palworld-server
+              localServerRestartScript=docker restart palworld-server
+              simulatedUDPByteArrayResponse=9,8,4,68,152,93,246,126,0,0,0,96,154,161,202,254,241,199,51,161,140,60,50,120,126,195,238,216,133,191,56,141,165,254,172,208,165,172,56,129,74,134,109,249,102,12
+              releaseAfterIdleSeconds=120
+              localServerRestartInterval=180
+              instanceStatusCheckInterval=10
+
+              backendInstanceId=${GameId}
+              publicEipAddress=${SentryPublicEip}
+              publicEipId=${SentryEipId}
+              backendEipId=${GameEipId}
+              " > $PAL_TOOLS_PATH/config.ini
+
+              # 注册为 service 开机自启动
+              echo -e "[Unit]\nDescription=Pal Proxy Service\nAfter=docker.service\n\n[Service]\nRestart=always\nRestartSec=5\nOOMScoreAdjust=-1000\nExecStart=$RUN_PROXY\n\n[Install]\nWantedBy=multi-user.target\n" | sudo tee /etc/systemd/system/pal-proxy.service > /dev/null
+              sudo systemctl enable pal-proxy.service
+              sudo systemctl start pal-proxy.service
+
+              sleep 10
+
+              sudo dnf config-manager --add-repo=https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+              sudo dnf -y install dnf-plugin-releasever-adapter --repo alinux3-plus
+              sudo dnf -y install docker-ce --nobest
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              sudo yum install nfs-utils -y
+              REGION=`curl -s 100.100.100.200/latest/meta-data/region-id`
+              # 某些地域没有镜像仓库，就近获取
+              if [ "$REGION" = "cn-nanjing" ] || [ "$REGION" = "cn-fuzhou" ]; then REGION=.cn-shanghai; elif [ "$REGION" = "cn-wuhan" ]; then REGION=.cn-chengdu; elif [ "$REGION" = "ap-northeast-2" ]; then REGION=.ap-northeast-1; elif [ "$REGION" = "ap-southeast-6" ] || [ "$REGION" = "ap-southeast-6" ]; then REGION=.ap-southeast-1; else REGION=-vpc.$REGION; fi
+              DOCKER_IMAGE=registry$REGION.aliyuncs.com/imbolo/palworld-server
+              # sudo docker pull $DOCKER_IMAGE_URL
+              # 创建 /PalSaved 用于在 ECS 上存储服务器配置和存档
+              sudo groupadd -g 1000 steam && sudo useradd -u 1000 -g steam -m steam || echo "ignore"
+
+              # 存档目录初始化
+              sudo mkdir /PalSaved && sudo chown -R 1000:1000 /PalSaved
+              # 提高同时发起的NFS请求数量
+              sudo echo "options sunrpc tcp_slot_table_entries=128" >> /etc/modprobe.d/sunrpc.conf
+              sudo echo "options sunrpc tcp_max_slot_table_entries=128" >> /etc/modprobe.d/sunrpc.conf
+              # 挂载 NAS 到存档目录
+              MOUNTPOINT=${NASMountPoint}
+              sudo mount -t nfs -o vers=3,nolock,proto=tcp,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport $MOUNTPOINT:/ /PalSaved
+              sudo echo "$MOUNTPOINT:/ /PalSaved nfs vers=3,nolock,proto=tcp,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,_netdev,noresvport 0 0" >> /etc/fstab
+
+
+              sudo docker create --restart=no --user 1000:1000 -v /PalSaved:/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/  --name palworld-server -e LAUNCH_ARGS="-port=8212" --net host -it $DOCKER_IMAGE:auto_update /home/steam/.pal_server_tools/run.sh
+              # sudo docker create --restart=always --user 1000:1000 -v /PalSaved:/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/ --name palworld-server -e LAUNCH_ARGS="-port=8212" --net host -it  $DOCKER_IMAGE:auto_update /home/steam/.pal_server_tools/run.sh
+            - GameIp: 
+                Fn::GetAtt: 
+                  - Game
+                  - PrivateIp
+              GameId:
+                Fn::GetAtt:
+                  - Game
+                  - InstanceId
+              SentryPublicEip:
+                Fn::GetAtt:
+                  - AssistEip
+                  - EipAddress
+              SentryEipId:
+                Fn::GetAtt:
+                  - AssistEip
+                  - AllocationId
+              GameEipId:
+                Fn::GetAtt:
+                  - GameEip
+                  - AllocationId
+              NASMountPoint:
+                Fn::GetAtt:
+                  - NASMountTarget
+                  - MountTargetDomain
+              StackRegion:
+                Ref: ALIYUN::Region
+              RoleName:
+                Fn::GetAtt:
+                  - RamRole
+                  - RoleName
+
+  SentryGroup:
+    #Sentry服务器的弹性伸缩组
+    #在sentry服务器工作时为1，希望sentry停止时会改成0，在recycle模式下sentry实例不会被直接释放，而会停止
+    Type: ALIYUN::ESS::ScalingGroup
+    Properties:
+      MaxSize: 1
+      MinSize: 0
+      DesiredCapacity: 0
+      ScalingGroupName: PalWorld-Sentry-Group
+      LaunchTemplateId:
+        Ref: SentryTemplate
+      VSwitchId:
+        Ref: VSwitch
+      DefaultCooldown: 30
+      ScalingPolicy: recycle
+      SpotInstanceRemedy: true
+      CompensateWithOnDemand: true
+      LaunchTemplateOverrides:
+        - InstanceType: ecs.e-c1m2.large
+          WeightedCapacity: 1
+        - InstanceType: ecs.t6-c1m2.large
+          WeightedCapacity: 1
+        - InstanceType: ecs.s6-c1m4.small
+          WeightedCapacity: 1
+        - InstanceType: ecs.t5-c1m2.large
+          WeightedCapacity: 1
+
+  SentryGroupEnable:
+    Type: ALIYUN::ESS::ScalingGroupEnable
+    Properties:
+      ScalingGroupId:
+        Ref: SentryGroup
+  
+  Game:
+    #Game服务器实例
+    Type: ALIYUN::ECS::Instance
+    Properties:
+      SecurityGroupId:
+        Ref: SecurityGroup
+      ImageId: aliyun_3_x64_20G_qboot_alibase_20230727.vhd #Alibaba Cloud Linux 3.2104 64位 快速启动版
+      InstanceType: 
+        Ref: GameType
+      SecurityEnhancementStrategy: Active
+      InstanceName: PalWorld-worker
+      # Password:
+      #   Ref: GamePassword
+      AllocatePublicIP: false
+      SystemDiskCategory: cloud_essd
+      SystemDiskPerformanceLevel: PL0
+      SystemDiskSize: 20
+      VpcId:
+        Ref: VPC
+      VSwitchId:
+        Ref: VSwitch
+      RamRoleName:
+        Fn::GetAtt:
+          - RamRole
+          - RoleName
+
+  GameRunCommand:
+    #Game服务器执行的命令
+    Type: ALIYUN::ECS::RunCommand
+    Properties:
+      Type: RunShellScript
+      ContentEncoding: Base64
+      Timeout: 300
+      Sync: true
+      InstanceIds:
+        - Ref: Game
+      CommandContent:
+        Fn::Base64Encode:
+          Fn::Sub:
+            - | 
+              #!/bin/sh
+              PAL_TOOLS_PATH=/root/.palworld-tools
+              RUN_PROXY=$PAL_TOOLS_PATH/run_proxy.sh
+
+              mkdir -p $PAL_TOOLS_PATH
+              curl https://cloud-tutorials.oss-cn-hangzhou-internal.aliyuncs.com/palworld/palworldproxy -o $PAL_TOOLS_PATH/palworldproxy
+              chmod +x $PAL_TOOLS_PATH/palworldproxy
+              # run_proxy.sh
+              echo '#!/bin/sh' > $RUN_PROXY
+              echo "$PAL_TOOLS_PATH/palworldproxy -c $PAL_TOOLS_PATH/config.ini" >> $RUN_PROXY
+              chmod +x $RUN_PROXY
+              # config.ini
+              echo "mode=worker
+              bufferSize=2048
+
+              instanceRamRole=${RoleName}
+              region=${StackRegion}
+              essApiEndpoint=ess-vpc.${StackRegion}.aliyuncs.com
+
+              ; worker 模式，与前端 sentry 交替工作。
+              [worker]
+              listenAddress=:8211
+              serverAddress=127.0.0.1:8212
+
+              essScalingGroupId=${SentryGroupId}
+              " > $PAL_TOOLS_PATH/config.ini
+
+              # 注册为 service 开机自启动
+              echo -e "[Unit]\nDescription=Pal Proxy Service\nAfter=docker.service\n\n[Service]\nRestart=always\nRestartSec=5\nOOMScoreAdjust=-1000\nExecStart=$RUN_PROXY\n\n[Install]\nWantedBy=multi-user.target\n" | sudo tee /etc/systemd/system/pal-proxy.service > /dev/null
+              sudo systemctl enable pal-proxy.service
+              sudo systemctl start pal-proxy.service
+
+              sleep 10
+
+              sudo dnf config-manager --add-repo=https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+              sudo dnf -y install dnf-plugin-releasever-adapter --repo alinux3-plus
+              sudo dnf -y install docker-ce --nobest
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              sudo yum install nfs-utils -y
+              REGION=`curl -s 100.100.100.200/latest/meta-data/region-id`
+              echo "Region: $REGION"
+              # 某些地域没有镜像仓库，就近获取
+              if [ "$REGION" = "cn-nanjing" ] || [ "$REGION" = "cn-fuzhou" ]; then REGION=.cn-shanghai; elif [ "$REGION" = "cn-wuhan" ]; then REGION=.cn-chengdu; elif [ "$REGION" = "ap-northeast-2" ]; then REGION=.ap-northeast-1; elif [ "$REGION" = "ap-southeast-6" ] || [ "$REGION" = "ap-southeast-6" ]; then REGION=.ap-southeast-1; else REGION=-vpc.$REGION; fi
+              DOCKER_IMAGE=registry$REGION.aliyuncs.com/imbolo/palworld-server
+              echo "Image: $DOCKER_IMAGE"
+              sudo docker pull $DOCKER_IMAGE
+              # 创建 /PalSaved 用于在 ECS 上存储服务器配置和存档
+              sudo groupadd -g 1000 steam && sudo useradd -u 1000 -g steam -m steam || echo "ignore"
+
+              # 存档目录初始化
+              sudo mkdir /PalSaved && sudo chown -R 1000:1000 /PalSaved
+              # 提高同时发起的NFS请求数量
+              sudo echo "options sunrpc tcp_slot_table_entries=128" >> /etc/modprobe.d/sunrpc.conf
+              sudo echo "options sunrpc tcp_max_slot_table_entries=128" >> /etc/modprobe.d/sunrpc.conf
+              # 挂载 NAS 到存档目录
+              echo "MountPoint: ${NASMountPoint}"
+              MOUNTPOINT=${NASMountPoint}
+              echo "MountPoint: $MOUNTPOINT"
+              sudo mount -t nfs -o vers=3,nolock,proto=tcp,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport $MOUNTPOINT:/ /PalSaved
+              sudo echo "$MOUNTPOINT:/ /PalSaved nfs vers=3,nolock,proto=tcp,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,_netdev,noresvport 0 0" >> /etc/fstab
+
+
+              sudo docker run --restart=always --user 1000:1000 -v /PalSaved:/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/  --name palworld-server -e LAUNCH_ARGS="-port=8212" --net host -itd $DOCKER_IMAGE
+            - SentryGroupId:
+                Fn::GetAtt:
+                  - SentryGroup
+                  - ScalingGroupId
+              NASMountPoint:
+                Fn::GetAtt:
+                  - NASMountTarget
+                  - MountTargetDomain
+              StackRegion:
+                Ref: ALIYUN::Region
+              RoleName:
+                Fn::GetAtt:
+                  - RamRole
+                  - RoleName
+
+  RamRole:
+    #ECS使用API时所用的ram角色
+    Type: ALIYUN::RAM::Role
+    Properties:
+      RoleName: PalWorld-Role
+      AssumeRolePolicyDocument:
+        Version: '1'
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - ecs.aliyuncs.com
+  
+  RamPolicies:
+    #Ram角色的权限
+    Type: ALIYUN::RAM::ManagedPolicy
+    Properties:
+      PolicyName: PalWorld-RolePolicies
+      Roles:
+        - Ref: RamRole
+      PolicyDocument:
+        Version: '1'
+        Statement:
+          - Action:
+              - 'ecs:*'
+              - 'eip:*'
+              - 'vpc:*'
+              - 'nas:*'
+              - 'ess:*'
+            Resource:
+              - '*'
+            Effect: Allow
+
+
+Metadata:
+  ALIYUN::ROS::Interface:
+    ParameterGroups:
+      - Parameters:
+          - ZoneId
+        Label:
+          default:
+            en: VSwitch availability zones
+            zh-cn: 虚拟交换机可用区
+      - Parameters:
+          # - GamePassword
+          - ServerName
+          - ServerDescription
+          - RCONEnabled
+          - AdminPassword
+          - ServerPassword
+        Label:
+          default:
+            en: Server configurations
+            zh-cn: 服务器配置
+      - Parameters:
+          - SentryType
+          - GameType
+        Label:
+          default:
+            en: ECS type configurations
+            zh-cn: ECS规格配置
